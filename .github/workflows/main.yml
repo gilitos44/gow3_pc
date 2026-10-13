@@ -1,0 +1,82 @@
+name: Compilar GOW3 - Android 39-bit (experimental)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 180
+    steps:
+      - name: Descargar codigo y submodulos
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Instalar MSYS2 CLANG64
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANG64
+          update: true
+          install: >-
+            git patch
+            mingw-w64-clang-x86_64-toolchain
+            mingw-w64-clang-x86_64-cmake
+            mingw-w64-clang-x86_64-ninja
+            mingw-w64-clang-x86_64-pkgconf
+            mingw-w64-clang-x86_64-python
+            mingw-w64-clang-x86_64-vulkan-headers
+            mingw-w64-clang-x86_64-vulkan-loader
+            mingw-w64-clang-x86_64-vulkan-memory-allocator
+            mingw-w64-clang-x86_64-glslang
+            mingw-w64-clang-x86_64-sdl3
+            mingw-w64-clang-x86_64-fmt
+            mingw-w64-clang-x86_64-boost
+            mingw-w64-clang-x86_64-robin-map
+            mingw-w64-clang-x86_64-xxhash
+            mingw-w64-clang-x86_64-ffmpeg
+            mingw-w64-clang-x86_64-zydis
+            mingw-w64-clang-x86_64-spirv-tools
+            mingw-w64-clang-x86_64-spirv-headers
+            mingw-w64-clang-x86_64-spirv-cross
+
+      - name: Aplicar limite experimental a 384 GiB
+        shell: msys2 {0}
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('src/runtime_memory.c')
+          original = '#define USER_MAX UINT64_C(0xfc00000000)'
+          modified = '#define USER_MAX UINT64_C(0x6000000000) /* 384 GiB - test only */'
+          s = p.read_text(encoding='utf-8')
+          if s.count(original) != 1:
+              raise SystemExit('No se encontro el valor esperado de USER_MAX')
+          p.write_text(s.replace(original, modified), encoding='utf-8')
+          PY
+          git diff -- src/runtime_memory.c
+
+      - name: Compilar ejecutable de Windows
+        shell: msys2 {0}
+        run: |
+          bash build.sh
+          test -s out/gow3-probe.exe
+
+      - name: Guardar ejecutable (si compila)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gow3-39bit-ejecutable-experimental
+          path: out/gow3-probe.exe
+          retention-days: 7
+
+      - name: Guardar registro de compilacion
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gow3-39bit-registro
+          path: out/gpu-build.log
+          if-no-files-found: ignore
+          retention-days: 7
