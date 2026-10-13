@@ -1,4 +1,4 @@
-name: Compilar GOW3 - Android 39-bit (experimental)
+name: GOW3 - Diagnostico VirtualAlloc2 en Wine
 
 on:
   workflow_dispatch:
@@ -43,40 +43,63 @@ jobs:
             mingw-w64-clang-x86_64-spirv-headers
             mingw-w64-clang-x86_64-spirv-cross
 
-      - name: Aplicar limite experimental a 384 GiB
+      - name: Parchear limite y agregar diagnostico de Wine
         shell: msys2 {0}
         run: |
           python - <<'PY'
           from pathlib import Path
           p = Path('src/runtime_memory.c')
-          original = '#define USER_MAX UINT64_C(0xfc00000000)'
-          modified = '#define USER_MAX UINT64_C(0x6000000000) /* 384 GiB - test only */'
           s = p.read_text(encoding='utf-8')
-          if s.count(original) != 1:
-              raise SystemExit('No se encontro el valor esperado de USER_MAX')
-          p.write_text(s.replace(original, modified), encoding='utf-8')
+          before = '#define USER_MAX UINT64_C(0xfc00000000)'
+          after = '#define USER_MAX UINT64_C(0x6000000000) /* 384 GiB */'
+          if s.count(before) != 1:
+              raise SystemExit('No se encontro el valor USER_MAX esperado')
+          s = s.replace(before, after)
+          target = 'void runtime_memory_reserve(void) {\n    if (region_count) return;'
+          if s.count(target) != 1:
+              raise SystemExit('No se encontro el inicio de runtime_memory_reserve')
+          diag = r'''void runtime_memory_reserve(void) {
+              if (region_count) return;
+              /* Pruebas temporales. Ninguna asigna RAM fisica. */
+              {
+                  const SIZE_T gib = (SIZE_T)1024 * 1024 * 1024;
+                  struct { const char *label; SIZE_T bytes; DWORD type; } tests[] = {
+                      {"reserva_normal_1GiB", gib, MEM_RESERVE},
+                      {"placeholder_1GiB", gib, MEM_RESERVE | MEM_RESERVE_PLACEHOLDER},
+                      {"placeholder_32GiB", 32 * gib, MEM_RESERVE | MEM_RESERVE_PLACEHOLDER},
+                      {"placeholder_320GiB", 320 * gib, MEM_RESERVE | MEM_RESERVE_PLACEHOLDER},
+                  };
+                  fprintf(stderr, "GOW3-DIAG: comienza comprobacion en Wine a 64 GiB\n");
+                  for (size_t i = 0; i < sizeof(tests) / sizeof(tests[0]); ++i) {
+                      SetLastError(0);
+                      void *probe = VirtualAlloc2(NULL, (void *)USER_MIN, tests[i].bytes,
+                                                  tests[i].type, PAGE_NOACCESS, NULL, 0);
+                      DWORD err = probe ? 0 : GetLastError();
+                      fprintf(stderr, "GOW3-DIAG: %s -> %s (error=%lu)\n",
+                              tests[i].label, probe ? "SI" : "NO", (unsigned long)err);
+                      if (probe && !VirtualFree(probe, 0, MEM_RELEASE))
+                          fprintf(stderr, "GOW3-DIAG: VirtualFree fallo: %lu\n",
+                                  (unsigned long)GetLastError());
+                  }
+                  fprintf(stderr, "GOW3-DIAG: termina comprobacion\n");
+              }'''
+          s = s.replace(target, diag)
+          p.write_text(s, encoding='utf-8')
+          print('Diagnostico insertado:')
+          print(s.count('GOW3-DIAG:'))
           PY
-          git diff -- src/runtime_memory.c
+          git diff --stat -- src/runtime_memory.c
 
-      - name: Compilar ejecutable de Windows
+      - name: Compilar ejecutable Windows
         shell: msys2 {0}
         run: |
           bash build.sh
           test -s out/gow3-probe.exe
 
-      - name: Guardar ejecutable (si compila)
+      - name: Guardar ejecutable experimental de diagnostico
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: gow3-39bit-ejecutable-experimental
+          name: gow3-diagnostico-wine-exe
           path: out/gow3-probe.exe
-          retention-days: 7
-
-      - name: Guardar registro de compilacion
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: gow3-39bit-registro
-          path: out/gpu-build.log
-          if-no-files-found: ignore
           retention-days: 7
